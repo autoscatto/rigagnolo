@@ -1,40 +1,62 @@
 import transmissionrpc
 from BeautifulSoup import BeautifulSoup
 import urllib2
-from threading import Thread
-from Queue import Queue
+from multiprocessing import Pool, Event
 
-
-TRANSMISSION_IP = "192.168.1.3"
+TRANSMISSION_IP = "127.0.0.1"
 SEARCH_URL = "http://torrentz.eu/%s"
 user_agent = 'Mozilla/4.0 (compatible; MSIE 5.5; Windows NT)'
+PNUMBER = 8
 
-tc = transmissionrpc.Client(address=TRANSMISSION_IP)
-torrents = tc.get_torrents()
+def initializer(terminating_):
+    global terminating
+    terminating = terminating_
 
-class Fistino(Thread):
-    def __init__(self, t):
-        Thread.__init__(self)
-        self.t = t
 
-    def run(self):
-        try:
-            hasha = self.t.hashString
-            u =urllib2.Request(SEARCH_URL%hasha,"",{ 'User-Agent' : user_agent} )
-            response = urllib2.urlopen(u)
-            soup = BeautifulSoup(response.read())
-            trackers_div = soup.find('div',{"class":'trackers'})
-            trackers = [x['announce'] for x in self.t.trackers]
-            for d in trackers_div.findAll('dt'):
-                new_tracker = d.find(text=True)
-                if new_tracker not in trackers:
-                    print "Adds %s to '%s'" %(new_tracker,self.t.name)
-                    tc.change_torrent([self.t.id],trackerAdd=[new_tracker])
-        except:
-            pass
+def tradder(h):
+    try:
+        if not terminating.is_set():
+            try:
+                hashstring, ttrackers, tid = h
+                u = urllib2.Request(SEARCH_URL % hashstring, "", {'User-Agent': user_agent})
+                response = urllib2.urlopen(u)
+                soup = BeautifulSoup(response.read())
+                trackers_div = soup.find('div', {"class": 'trackers'})
+                trackers = [b['announce'] for b in ttrackers]
+                if trackers_div:
+                    uu = []
+                    for d in trackers_div.findAll('dt'):
+                        tl = d.find(text=True)
+                        if tl not in trackers:
+                            uu.append(tl)
+                    return tid, uu
+                return None, []
+            except Exception as e:
+                    print e
+        else:
+            print "Ok, stahp"
+    except KeyboardInterrupt:
+        terminating.set()
 
-threads = [Fistino(t) for t in torrents]
-[x.start() for x in threads]
-[x.join() for x in threads]
 
+if __name__ == "__main__":
+    tc = transmissionrpc.Client(address=TRANSMISSION_IP)
+    torrents = tc.get_torrents()
+    terminating = Event()
+    try:
+        #print torrents
+        pool = Pool(PNUMBER, initializer=initializer, initargs=(terminating, ))
+        hh = [(h.hashString, h.trackers, h.id) for h in torrents]
+        resulti = pool.map(tradder, hh)
+        for tid, tlist in resulti:
+            #print tid
+            if len(tlist) > 0:
+                ts = tc.get_torrent(tid)
+                print "Adds %s to '%s'" % (str(tlist).translate(None, "'"), str(ts))
+                tc.change_torrent([tid], trackerAdd=tlist)
+        pool.close()
+    except KeyboardInterrupt:
+        print "################ Caught KeyboardInterrupt, terminating workers #####################"
+        pool.terminate()
+        pool.join()
 
